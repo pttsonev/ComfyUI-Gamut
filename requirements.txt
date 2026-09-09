@@ -1,0 +1,8 @@
+# Core — required
+numpy>=1.24
+OpenEXR>=3.2
+
+# Optional — unlocks the OCIO nodes (camera log spaces, ACES output
+# transforms, LUT/CDL). The pack loads and the core/IO/LTX nodes work
+# without it; the OCIO nodes simply do not register.
+# opencolorio>=2.5

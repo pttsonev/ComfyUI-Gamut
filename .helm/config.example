@@ -1,0 +1,13 @@
+# Helm peer configuration — copy to `config` beside peer.sh and edit.
+# Backend: which backends/<name>.sh drives the peer model.
+PEER_BACKEND=codex
+# Models per role. 2026-09-08: one model on every role — gpt-6-astra, which is
+# clearly ahead on code and reasoning. This deliberately parks model diversity:
+# writer and reviewer are separated by THREAD, not by model (see AGENTS.md section 5).
+# Split these lines again when a second model is worth reintroducing.
+PEER_MODEL_IMPLEMENT=gpt-6-astra
+PEER_MODEL_REVIEW=gpt-6-astra
+# PEER_MODEL_ASK defaults to PEER_MODEL_REVIEW
+PEER_EFFORT=xhigh
+# Review-loop cap consumed by helm-plan/helm-build (rounds before surfacing to the user):
+PEER_REVIEW_ROUND_CAP=5
