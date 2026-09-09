@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
+
+from .colorspace import ColorSpace
+from .exr import _CANONICAL_NAMES
 
 
 DEFAULT_CONFIG = "cg-config-v4.0.0_aces-v2.0_ocio-v2.5"
@@ -91,7 +95,8 @@ def apply_display(
 
 
 def apply_file_transform(
-    arr: np.ndarray, path: str | os.PathLike[str], direction: str = "forward"
+    arr: np.ndarray, path: str | os.PathLike[str], direction: str = "forward",
+    interpolation: str = "linear",
 ) -> np.ndarray:
     """Apply a LUT/file transform in the explicit forward or inverse direction."""
     ocio = _ocio()
@@ -101,7 +106,49 @@ def apply_file_transform(
     }
     if direction not in directions:
         raise ValueError(f"Unknown file transform direction: {direction!r}")
+    interpolations = {
+        "nearest": ocio.INTERP_NEAREST,
+        "linear": ocio.INTERP_LINEAR,
+        "tetrahedral": ocio.INTERP_TETRAHEDRAL,
+        "best": ocio.INTERP_BEST,
+    }
+    if interpolation not in interpolations:
+        raise ValueError(f"Unknown LUT interpolation: {interpolation!r}")
     path = os.path.abspath(os.path.expanduser(os.path.expandvars(os.fspath(path))))
-    transform = ocio.FileTransform(src=path, direction=directions[direction])
+    transform = ocio.FileTransform(
+        src=path, direction=directions[direction],
+        interpolation=interpolations[interpolation],
+    )
     processor = ocio.Config.CreateRaw().getProcessor(transform).getDefaultCPUProcessor()
     return _apply(arr, processor)
+
+
+def source_name(cs: ColorSpace, cfg: Any) -> str:
+    """Resolve a wired declaration using canonical names or its OCIO provenance."""
+    name = _CANONICAL_NAMES.get((cs.primaries, cs.transfer))
+    if cs.source.startswith("ocio:"):
+        name = cs.source[len("ocio:"):]
+    if name is None or cfg.getColorSpace(name) is None:
+        raise ValueError(
+            f"No OCIO space in this config matches {cs.primaries}/{cs.transfer} "
+            f"from {cs.source!r}; supply a matching config or an explicit source."
+        )
+    return name
+
+
+def declaration(cfg: Any, name: str) -> ColorSpace:
+    """Describe known canonical spaces; retain arbitrary OCIO names as provenance."""
+    space = cfg.getColorSpace(name)
+    if space is None:
+        raise ValueError(f"Unknown OCIO colour space: {name!r}")
+    resolved = space.getName()
+    for (primaries_name, transfer_name), canonical in _CANONICAL_NAMES.items():
+        candidate = cfg.getColorSpace(canonical)
+        if candidate is not None and candidate.getName() == resolved:
+            return ColorSpace(primaries_name, transfer_name, f"ocio:{resolved}")
+    return ColorSpace("unknown", "unknown", f"ocio:{resolved}")
+
+
+def image_from_array(arr: np.ndarray, reference: torch.Tensor) -> torch.Tensor:
+    """Return a processor result as a float32 IMAGE on the input image's device."""
+    return torch.from_numpy(arr).to(device=reference.device, dtype=torch.float32)

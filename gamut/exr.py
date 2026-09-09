@@ -4,7 +4,9 @@ from os import PathLike, fspath
 
 import numpy as np
 import OpenEXR
+import torch
 
+from . import primaries, transfer
 from .colorspace import TRANSFERS, ColorSpace
 from .primaries import CHROMATICITIES
 
@@ -112,8 +114,9 @@ def write_exr(
 ) -> None:
     """Write HWC float RGB/RGBA and real chromaticities/colorSpace attributes.
 
-    Pixels are not clipped or colour-converted. The transfer display name is
-    written verbatim. Errors from validation or the EXR writer propagate.
+    Pixels are not clipped or colour-converted. Complete canonical space names
+    are used where known, with the transfer display name as fallback. Errors
+    from validation or the EXR writer propagate.
     """
     pixels = np.asarray(arr)
     if pixels.ndim != 3 or pixels.shape[-1] not in (3, 4) or 0 in pixels.shape:
@@ -141,3 +144,31 @@ def write_exr(
     name = "RGBA" if pixels.shape[-1] == 4 else "RGB"
     with OpenEXR.File(header, {name: pixels}) as image:
         image.write(fspath(path))
+
+
+def load_image(
+    path: str | PathLike[str],
+    fallback_primaries: str = "rec709",
+    fallback_transfer: str = "linear",
+    tonemap_preview: bool = False,
+    colorspace: ColorSpace | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, ColorSpace]:
+    """Adapt EXR pixels to IMAGE/MASK tensors; real header metadata is authoritative.
+
+    The optional preview decodes, rotates to Rec.709, clips to display range,
+    and encodes sRGB. It is a display preview, not an HDR-preserving output.
+    ComfyUI's MASK is transparency (one minus alpha).
+    """
+    pixels, declared, _ = read_exr(path)
+    cs = declared or colorspace or ColorSpace(
+        fallback_primaries, fallback_transfer, "widget:fallback"
+    )
+    image = torch.from_numpy(pixels).unsqueeze(0)
+    rgb = image[..., :3]
+    mask = 1.0 - image[..., 3] if image.shape[-1] == 4 else torch.zeros_like(rgb[..., 0])
+    if tonemap_preview:
+        linear = transfer.decode(rgb, cs.transfer)
+        linear = primaries.convert(linear, cs.primaries, "rec709")
+        rgb = transfer.srgb_encode(linear.clamp(0.0, 1.0))
+        cs = ColorSpace("rec709", "srgb", "node:GamutLoadEXR:preview")
+    return rgb.contiguous(), mask.contiguous(), cs

@@ -137,3 +137,14 @@ def decode(
         raise KeyError(f"Unknown transfer curve: {curve!r}") from None
     linear = transform(img)
     return linear.clamp_min(0.0) if clamp_negatives else linear
+
+
+def transform_rgb(img: torch.Tensor, curve: str, direction: str) -> torch.Tensor:
+    """Apply a transfer to RGB only, passing alpha and any extra channels through."""
+    if img.ndim == 0 or img.shape[-1] < 3:
+        raise ValueError("Transfer conversion requires [..., C] with C >= 3.")
+    if direction not in ("encode", "decode"):
+        raise ValueError(f"Unknown transfer direction: {direction!r}")
+    transform = encode if direction == "encode" else decode
+    rgb = transform(img[..., :3], curve)
+    return rgb if img.shape[-1] == 3 else torch.cat((rgb, img[..., 3:]), dim=-1)

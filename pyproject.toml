@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-gamut"
+version = "0.1.0"
+description = "Colour management, tagged EXR IO, and LTX HDR nodes for ComfyUI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Petar Tsonev"}]
+dependencies = ["torch", "numpy>=1.24", "OpenEXR>=3.3"]
+
+[project.optional-dependencies]
+ocio = ["opencolorio>=2.5"]
+test = ["pytest>=7", "opencv-python-headless>=4.8"]
+
+[project.urls]
+Repository = "https://github.com/pttsonev/ComfyUI-Gamut"
+
+[tool.setuptools]
+packages = ["comfyui_gamut", "comfyui_gamut.gamut", "comfyui_gamut.nodes"]
+package-dir = {comfyui_gamut = "."}
+include-package-data = false
+license-files = ["LICENSE", "NOTICE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
