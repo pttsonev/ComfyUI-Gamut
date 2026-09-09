@@ -29,9 +29,25 @@ _NAMED_SPACES = {
     "linear rec.2020": ("rec2020", "linear"),
     "srgb": ("rec709", "srgb"),
     "acescct": ("acescg", "acescct"),
+    # LTX-2 reuses the LogC3 curve on Rec.709 primaries. With chromaticities
+    # present this is validated against them, so an ARRI file carrying AWG3
+    # chromaticities under the same tag is correctly rejected rather than
+    # claimed as Rec.709.
     "logc3": ("rec709", "logc3"),
-    "arri logc3 (ei800)": ("rec709", "logc3"),
 }
+
+# Transfers that say nothing about primaries. Only these may be read back from
+# a bare transfer tag, and only these may be written alongside arbitrary
+# chromaticities. Everything else names a complete space whose primaries are
+# part of its definition — "ACEScct" means AP1, "sRGB" means Rec.709 — so a
+# bare match would let a tag contradict the chromaticities beside it.
+#
+# Deliberately absent: "ARRI LogC3 (EI800)". ARRI's camera space is the LogC3
+# curve on ARRI Wide Gamut 3, NOT Rec.709. LTX-2 reuses the LogC3 *curve* on
+# Rec.709 primaries, which is a different colour space that happens to share a
+# transfer. We hold no AWG3 matrices, so we refuse to recognise the camera
+# space rather than silently misidentify it as Rec.709.
+_PRIMARIES_NEUTRAL = frozenset({"linear", "g22", "g24"})
 
 # Written tag for each (primaries, transfer) pair we can name completely.
 # A complete name is what Nuke and OCIO key off; the chromaticities carry the
@@ -68,12 +84,14 @@ def _infer_colorspace(header: dict) -> ColorSpace | None:
         if tag is None:
             # EXR's normal linear-light convention for chromaticities-only files.
             transfer = "linear"
-        elif name in _TRANSFER_NAMES:
-            transfer = _TRANSFER_NAMES[name]
         elif name in _NAMED_SPACES:
+            # Complete names are checked FIRST and must agree with the
+            # chromaticities; a bare-transfer match here would skip that check.
             named_primaries, transfer = _NAMED_SPACES[name]
             if named_primaries != primaries:
                 return None
+        elif name in _TRANSFER_NAMES and _TRANSFER_NAMES[name] in _PRIMARIES_NEUTRAL:
+            transfer = _TRANSFER_NAMES[name]
         else:
             return None
         return ColorSpace(primaries, transfer, "exr:chromaticities")
@@ -132,6 +150,24 @@ def write_exr(
         codec = _COMPRESSIONS[compression.lower()]
     except KeyError:
         raise ValueError(f"Unknown EXR compression: {compression!r}") from None
+    pair = (colorspace.primaries, colorspace.transfer)
+    if pair not in _CANONICAL_NAMES and colorspace.transfer not in _PRIMARIES_NEUTRAL:
+        raise ValueError(
+            f"Refusing to write {colorspace.transfer!r} on {colorspace.primaries!r} "
+            f"primaries: {TRANSFERS[colorspace.transfer]!r} names a complete colour "
+            "space whose own primaries differ, so the colorSpace tag would "
+            "contradict the chromaticities. Convert primaries first, or use a "
+            "primaries-neutral transfer."
+        )
+
+    if half:
+        finite = pixels[np.isfinite(pixels)]
+        if finite.size and np.abs(finite).max() > 65504.0:
+            raise ValueError(
+                f"Value {float(np.abs(finite).max()):.6g} exceeds the float16 "
+                "maximum of 65504; writing half would silently turn finite "
+                "highlights into inf. Set half=False to write float32."
+            )
     pixels = np.ascontiguousarray(pixels, dtype=np.float16 if half else np.float32)
     header = {
         "type": OpenEXR.scanlineimage,

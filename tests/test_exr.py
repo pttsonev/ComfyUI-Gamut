@@ -5,7 +5,7 @@ import OpenEXR
 import pytest
 
 from gamut.colorspace import PRIMARIES, TRANSFERS, ColorSpace
-from gamut.exr import _CANONICAL_NAMES, read_exr, write_exr
+from gamut.exr import _CANONICAL_NAMES, _PRIMARIES_NEUTRAL, read_exr, write_exr
 from gamut.primaries import CHROMATICITIES
 
 
@@ -13,6 +13,23 @@ def _pixels(channels=3):
     return np.linspace(-0.25, 100.0, 2 * 3 * channels, dtype=np.float32).reshape(
         2, 3, channels
     )
+
+
+# Writable pairs: those we can name truthfully. A transfer whose name is itself
+# a complete colour space ("ACEScct" => AP1, "sRGB" => Rec.709) may only be
+# written on its own primaries, or the tag would contradict the chromaticities.
+WRITABLE = [
+    (pri, tr)
+    for pri in PRIMARIES
+    for tr in TRANSFERS
+    if (pri, tr) in _CANONICAL_NAMES or tr in _PRIMARIES_NEUTRAL
+]
+REFUSED = [
+    (pri, tr)
+    for pri in PRIMARIES
+    for tr in TRANSFERS
+    if (pri, tr) not in _CANONICAL_NAMES and tr not in _PRIMARIES_NEUTRAL
+]
 
 
 def _write_raw(path, header, pixels=None):
@@ -23,8 +40,7 @@ def _write_raw(path, header, pixels=None):
         image.write(str(path))
 
 
-@pytest.mark.parametrize("primaries", PRIMARIES)
-@pytest.mark.parametrize("transfer", TRANSFERS)
+@pytest.mark.parametrize("primaries,transfer", WRITABLE)
 @pytest.mark.parametrize("half", [False, True])
 @pytest.mark.parametrize("channels", [3, 4])
 def test_pixels_and_both_real_header_tags_round_trip(
@@ -191,3 +207,42 @@ def test_file_errors_propagate(tmp_path):
     with pytest.raises((RuntimeError, OSError)):
         write_exr(tmp_path / "missing" / "out.exr", _pixels(),
                   ColorSpace("rec709", "linear", "widget"))
+
+
+@pytest.mark.parametrize("primaries,transfer", REFUSED)
+def test_write_refuses_tag_that_would_contradict_the_chromaticities(
+    tmp_path, primaries, transfer
+):
+    """A complete-space transfer name on foreign primaries must not be written.
+
+    ACEScct is defined on AP1 and sRGB on Rec.709. Writing either name beside
+    different chromaticities produces a file whose tag and header disagree, and
+    a consumer that trusts the name applies the wrong gamut.
+    """
+    with pytest.raises(ValueError, match="contradict the chromaticities"):
+        write_exr(
+            tmp_path / "bad.exr",
+            _pixels(),
+            ColorSpace(primaries, transfer, "widget"),
+        )
+
+
+def test_half_write_refuses_values_that_would_become_inf(tmp_path):
+    """Finite highlights must never be silently turned into inf by the cast."""
+    hot = np.full((2, 2, 3), 112802.9375, dtype=np.float32)  # LTX 1.0 at +11 stops
+    cs = ColorSpace("rec709", "linear", "widget")
+    with pytest.raises(ValueError, match="exceeds the float16 maximum"):
+        write_exr(tmp_path / "hot.exr", hot, cs, half=True)
+    # float32 carries it fine.
+    write_exr(tmp_path / "hot32.exr", hot, cs, half=False)
+    pixels, _, _ = read_exr(tmp_path / "hot32.exr")
+    assert np.isfinite(pixels).all()
+    np.testing.assert_allclose(pixels.max(), 112802.9375, rtol=0, atol=0)
+
+
+def test_arri_camera_logc3_name_is_not_claimed_as_rec709(tmp_path):
+    """ARRI LogC3 EI800 is AWG3, not Rec.709; we must refuse, not misidentify."""
+    path = tmp_path / "arri.exr"
+    _write_raw(path, {"colorSpace": "ARRI LogC3 (EI800)"})
+    _, inferred, _ = read_exr(path)
+    assert inferred is None
