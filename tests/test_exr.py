@@ -246,3 +246,51 @@ def test_arri_camera_logc3_name_is_not_claimed_as_rec709(tmp_path):
     _write_raw(path, {"colorSpace": "ARRI LogC3 (EI800)"})
     _, inferred, _ = read_exr(path)
     assert inferred is None
+
+
+# --- Independent golden fixtures ------------------------------------------
+# Hand-written, NOT derived from gamut.exr's registries. If someone edits
+# _CANONICAL_NAMES the round-trip tests above would follow the edit silently;
+# these will not. The strings are the names Nuke and the OCIO ACES config
+# actually use, so this table is an interoperability contract, not a restating
+# of the implementation.
+GOLDEN_TAGS = {
+    ("acescg", "linear"): "ACEScg",
+    ("ap0", "linear"): "ACES2065-1",
+    ("rec709", "linear"): "Linear Rec.709 (sRGB)",
+    ("rec2020", "linear"): "Linear Rec.2020",
+    ("rec709", "srgb"): "sRGB",
+    ("acescg", "acescct"): "ACEScct",
+    ("rec709", "logc3"): "LogC3",
+}
+
+GOLDEN_CHROMATICITIES = {
+    "rec709": (0.640, 0.330, 0.300, 0.600, 0.150, 0.060, 0.3127, 0.3290),
+    "acescg": (0.713, 0.293, 0.165, 0.830, 0.128, 0.044, 0.32168, 0.33767),
+    "ap0": (0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767),
+    "rec2020": (0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290),
+}
+
+
+@pytest.mark.parametrize("pair,expected_tag", sorted(GOLDEN_TAGS.items()))
+def test_written_tag_matches_hand_written_golden_name(tmp_path, pair, expected_tag):
+    primaries, transfer = pair
+    path = tmp_path / "golden.exr"
+    write_exr(path, _pixels(), ColorSpace(primaries, transfer, "widget"), half=False)
+    with OpenEXR.File(str(path)) as image:
+        assert image.header()["colorSpace"] == expected_tag
+
+
+@pytest.mark.parametrize("primaries,expected", sorted(GOLDEN_CHROMATICITIES.items()))
+def test_written_chromaticities_match_hand_written_golden_values(
+    tmp_path, primaries, expected
+):
+    path = tmp_path / "golden_chroma.exr"
+    write_exr(path, _pixels(), ColorSpace(primaries, "linear", "widget"), half=False)
+    with OpenEXR.File(str(path)) as image:
+        np.testing.assert_allclose(
+            np.asarray(image.header()["chromaticities"], dtype=np.float64),
+            np.asarray(expected, dtype=np.float64),
+            rtol=0,
+            atol=1e-6,
+        )
